@@ -1,0 +1,89 @@
+# This Docker Compose file sets up a project with:
+# - A Microsoft SQL Server database
+# - An initialization service to create the database if missing
+# - A Spring Boot backend
+# - A frontend (react)
+# Runs with: docker compose up --build
+
+name: ideaprojects
+
+services:
+  # -------------------------------
+  # Microsoft SQL Server Database
+  # -------------------------------
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: journal_db
+    environment:
+      - ACCEPT_EULA=Y                # Accepts the SQL Server license terms
+      - SA_PASSWORD=${SA_PASSWORD}   # SA user password (set in .env file)
+      - MSSQL_PID=Express            # Uses the free Express edition
+    ports:
+      - "1433:1433"                  # Exposes SQL Server on port 1433
+    volumes:
+      - mssql-data:/var/opt/mssql    # Persists database data on the host
+    healthcheck:
+      # Checks every 5 seconds if SQL Server is ready to accept connections
+      test: [ "CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$SA_PASSWORD\" -Q \"SELECT 1\" >/dev/null 2>&1" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ----------------------------------------
+  # Database initializer (creates 'journal' DB if missing)
+  # ----------------------------------------
+  init-db:
+    image: mcr.microsoft.com/mssql-tools:latest
+    depends_on:
+      db:
+        condition: service_healthy    # Runs only after SQL Server is ready
+    environment:
+      - SA_PASSWORD=${SA_PASSWORD}
+    entrypoint:
+      [
+        "/bin/sh",
+        "-c",
+        # Creates the 'journal' database if it doesn’t already exist
+        "/opt/mssql-tools/bin/sqlcmd -S db -U sa -P $SA_PASSWORD -Q \"IF DB_ID('journal') IS NULL CREATE DATABASE journal;\""
+      ]
+
+  # -------------------------------
+  # Spring Boot backend service
+  # -------------------------------
+  backend:
+    build:
+      context: ./backend              # Uses Dockerfile in ./backend
+      # target: runtime
+    container_name: journal-backend
+    depends_on:
+      db:
+        condition: service_healthy    # Waits for the database
+      init-db:
+        condition: service_completed_successfully  # Waits for DB creation
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SA_PASSWORD=${SA_PASSWORD}
+      # Activates the 'docker' Spring profile
+      # - SPRING_DATASOURCE_URL=jdbc:sqlserver://db:1433;databaseName=journal;encrypt=false;trustServerCertificate=true
+      # - SPRING_DATASOURCE_USERNAME=sa
+      # - SPRING_DATASOURCE_PASSWORD=${SA_PASSWORD}
+    ports:
+      - "8080:8080"                   # Exposes backend API on localhost:8080
+
+  # -------------------------------
+  # Frontend web application
+  # -------------------------------
+  frontend:
+    build:
+      context: ./frontend             # Uses Dockerfile in ./frontend
+    container_name: journal-frontend
+    depends_on:
+      - backend                       # Starts after backend is running
+    ports:
+      - "5173:80"                     # Maps frontend container port 80 to localhost:5173
+
+# -------------------------------
+# Persistent storage for SQL Server data
+# -------------------------------
+volumes:
+  mssql-data:
